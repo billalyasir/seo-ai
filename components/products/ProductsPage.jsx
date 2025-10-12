@@ -1265,6 +1265,7 @@ export default function ProductsPage() {
 
   // ✅ NEW: Client-side ZIP download
   // Remove the old postZip function
+  // Remove the old postZip function
 
   const downloadSelectedImages = React.useCallback(async () => {
     if (!downloadSelections.length || zipLoading) return;
@@ -1272,34 +1273,35 @@ export default function ProductsPage() {
 
     try {
       const zip = new JSZip();
-      const batchSize = 10; // Prevent overwhelming the browser
+      const batchSize = 10; // Process 10 images at a time to avoid overwhelming the browser
 
-      // Process images in batches
       for (let i = 0; i < downloadSelections.length; i += batchSize) {
         const batch = downloadSelections.slice(i, i + batchSize);
-        await Promise.all(
-          batch.map(async (item) => {
-            try {
-              const res = await fetch(
-                `/api/images-zip?url=${encodeURIComponent(item.url)}`
-              );
-              if (!res.ok) {
-                console.warn(`Skipping image (HTTP ${res.status}):`, item.url);
-                return;
-              }
-              const blob = await res.blob();
-              zip.file(item.filename, blob);
-            } catch (err) {
-              console.warn(`Failed to fetch image:`, item.url, err.message);
+
+        const batchPromises = batch.map(async (item) => {
+          try {
+            const res = await fetch(
+              `/api/images-zip?url=${encodeURIComponent(item.url)}`
+            );
+            if (!res.ok) {
+              console.warn(`Skipping image (HTTP ${res.status}):`, item.url);
+              return;
             }
-          })
-        );
+            const blob = await res.blob();
+            zip.file(item.filename, blob);
+          } catch (err) {
+            console.warn(`Failed to fetch image:`, item.url, err.message);
+          }
+        });
+
+        // Wait for all images in this batch to be fetched
+        await Promise.all(batchPromises);
       }
 
-      // Generate and download ZIP
-      const zipBlob = await zip.generateAsync({ type: "blob" });
+      // Generate the final ZIP file
+      const content = await zip.generateAsync({ type: "blob" });
       const dateStr = new Date().toISOString().slice(0, 10);
-      saveAs(zipBlob, `product-images-${dateStr}.zip`);
+      saveAs(content, `product-images-${dateStr}.zip`);
       toast.success("Download started!");
     } catch (err) {
       console.error("ZIP creation failed:", err);

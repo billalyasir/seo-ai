@@ -1,7 +1,8 @@
-// app/api/images-zip/route.js
+// /app/api/images-zip/route.js
 
 /* eslint-disable no-console */
 
+// Force Node runtime and prevent static optimization
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
@@ -40,12 +41,10 @@ export async function GET(request) {
     }
 
     // Fetch with browser-like headers to bypass anti-bot checks
+    // CRITICAL: Remove Referer to avoid origin-based blocking
     const response = await fetch(targetUrl, {
       cache: "no-store",
       headers: {
-        // Critical: Remove Referer to avoid origin-based blocking
-        // 'Referer': '', // optional: you can also set it to targetUrl.origin if needed
-
         // Mimic a real Chrome browser
         "User-Agent":
           "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
