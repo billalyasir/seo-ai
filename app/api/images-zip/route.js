@@ -7,19 +7,70 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 /**
- * Universal image proxy to bypass 403/404/CORS blocks.
- * Usage:
- *   GET /api/images-zip?url=https://example.com/image.jpg
+ * GET /api/images-zip?url=<imageUrl>
+ * A resilient image proxy that:
+ *   - Sends realistic browser headers (User-Agent, Accept, Referer)
+ *   - Follows redirects
+ *   - Retries with header variants if the origin blocks hotlinking
+ *   - Streams bytes back with permissive CORS
  */
 
+// --- CORS preflight ---
 export async function OPTIONS() {
   return new Response(null, {
     status: 204,
     headers: {
       "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Methods": "GET",
       "Access-Control-Allow-Headers": "Content-Type",
+      "Access-Control-Allow-Methods": "GET,OPTIONS",
     },
+  });
+}
+
+// Small allowlist to avoid proxy abuse (add more hostnames if you need)
+const ALLOWLIST = new Set([
+  "www.supermarketcy.com.cy",
+  "supermarketcy.com.cy",
+  // add other image hosts you plan to support…
+]);
+
+function isAllowed(urlStr) {
+  try {
+    const u = new URL(urlStr);
+    return ALLOWLIST.has(u.hostname);
+  } catch {
+    return false;
+  }
+}
+
+const UA =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+
+function buildHeaders(targetUrl, variant = 0) {
+  const origin = new URL(targetUrl).origin + "/";
+  // Variant 0: Full browser-like with Referer
+  // Variant 1: Same but without Referer
+  const common = {
+    "User-Agent": UA,
+    Accept: "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Cache-Control": "no-cache",
+    Pragma: "no-cache",
+  };
+  if (variant === 0) {
+    return { ...common, Referer: origin };
+  }
+  return common;
+}
+
+async function tryFetch(urlStr, variant = 0) {
+  return fetch(urlStr, {
+    // Don’t cache on the server
+    cache: "no-store",
+    // Follow 30x chains (some CDNs issue them)
+    redirect: "follow",
+    // Send our header variant
+    headers: buildHeaders(urlStr, variant),
   });
 }
 
@@ -28,66 +79,52 @@ export async function GET(request) {
   const url = searchParams.get("url");
 
   if (!url) {
-    return new Response("Missing 'url' parameter", { status: 400 });
+    return new Response("Missing url", { status: 400 });
+  }
+  if (!isAllowed(url)) {
+    return new Response("Host not allowed", { status: 403 });
   }
 
   try {
-    // Validate URL format
-    let targetUrl;
-    try {
-      targetUrl = new URL(url);
-    } catch {
-      return new Response("Invalid URL", { status: 400 });
+    // 1) First attempt with Referer spoofed to the image origin
+    let upstream = await tryFetch(url, 0);
+
+    // 2) If blocked (403/401/400/406), retry without Referer
+    if (!upstream.ok && [400, 401, 403, 406].includes(upstream.status)) {
+      upstream = await tryFetch(url, 1);
     }
 
-    // Fetch with browser-like headers to bypass anti-bot checks
-    // CRITICAL: Remove Referer to avoid origin-based blocking
-    const response = await fetch(targetUrl, {
-      cache: "no-store",
-      headers: {
-        // Mimic a real Chrome browser
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
-
-        // Optional: add more realistic headers
-        Accept:
-          "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Accept-Encoding": "gzip, deflate, br",
-        "Sec-Fetch-Dest": "image",
-        "Sec-Fetch-Mode": "no-cors",
-        "Sec-Fetch-Site": "cross-site",
-      },
-      redirect: "follow", // Follow redirects (e.g., 301/302)
-      next: { revalidate: 0 }, // Skip Next.js cache
-    });
-
-    if (!response.ok) {
-      console.warn(`Image fetch failed (${response.status}) for:`, url);
-      return new Response(`Upstream error: ${response.status}`, {
-        status: response.status,
+    // 3) If still not ok, bubble the upstream status (helps debugging)
+    if (!upstream.ok) {
+      console.warn(`Upstream error for ${url}: ${upstream.status}`);
+      return new Response(`Upstream error: ${upstream.status}`, {
+        status: upstream.status,
+        headers: {
+          "Access-Control-Allow-Origin": "*",
+        },
       });
     }
 
-    // Stream the image back to the client
-    const contentType =
-      response.headers.get("content-type") || "application/octet-stream";
-    const contentLength = response.headers.get("content-length");
+    // Stream bytes back to the browser
+    const ct =
+      upstream.headers.get("content-type") || "application/octet-stream";
+    const ab = await upstream.arrayBuffer();
 
-    const headers = new Headers({
-      "Content-Type": contentType,
-      "Cache-Control": "public, max-age=86400", // Cache for 1 day
-      "Access-Control-Allow-Origin": "*", // Enable cross-origin access
+    return new Response(ab, {
+      status: 200,
+      headers: {
+        "Content-Type": ct,
+        // cache a bit on the client (tune as you wish)
+        "Cache-Control": "public, max-age=86400",
+        // allow your web app to read the bytes
+        "Access-Control-Allow-Origin": "*",
+      },
     });
-
-    if (contentLength) {
-      headers.set("Content-Length", contentLength);
-    }
-
-    // Return the image as a stream (memory efficient)
-    return new Response(response.body, { headers });
-  } catch (error) {
-    console.error("Proxy fetch error:", url, error.message);
-    return new Response("Failed to fetch image", { status: 502 });
+  } catch (e) {
+    console.error("Image proxy error:", e);
+    return new Response("Fetch failed", {
+      status: 502,
+      headers: { "Access-Control-Allow-Origin": "*" },
+    });
   }
 }
