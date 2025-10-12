@@ -797,7 +797,6 @@ export default function ProductsPage() {
     () => filteredRows.map((r) => deepCopy(r)),
     [filteredRows]
   );
-  // ✅ NEW: Track visible row IDs
   const [visibleRowIds, setVisibleRowIds] = useState(new Set());
   const updateVisibleRowIds = useCallback(() => {
     if (!gridRef.current) return;
@@ -1349,7 +1348,6 @@ export default function ProductsPage() {
 
   /* ---------- grid image cell ---------- */
   const ImageCell = ({ data }) => {
-    // ✅ Only render if row is currently visible
     const isVisible = visibleRowIds.has(data?.id);
     if (!isVisible) {
       return <div className="text-muted-foreground text-xs">Loading...</div>;
@@ -1714,35 +1712,7 @@ export default function ProductsPage() {
       setShowOnlySelected(false);
     }
   }, [selected]);
-  const toggleAllImagesForProduct = React.useCallback(
-    (rec, checked) => {
-      const urls = (imagesById[rec.id] || []).filter((u) => !badUrls.has(u));
-      const chosen = (selectedImagesById[rec.id] || []).filter(
-        (u) => !badUrls.has(u)
-      );
-      chosen.forEach((u) =>
-        dispatch(
-          productsSlice.actions.toggleSelectImage({
-            id: rec.id,
-            url: u,
-            checked: false,
-          })
-        )
-      );
-      if (checked) {
-        urls.forEach((u) =>
-          dispatch(
-            productsSlice.actions.toggleSelectImage({
-              id: rec.id,
-              url: u,
-              checked: true,
-            })
-          )
-        );
-      }
-    },
-    [dispatch, imagesById, selectedImagesById, badUrls]
-  );
+
   if (!productsState) {
     return (
       <div className="flex items-center justify-center min-h-screen">
@@ -1750,6 +1720,7 @@ export default function ProductsPage() {
       </div>
     );
   }
+
   return (
     <div className="py-6 space-y-6">
       {!acceptedInfo && (
@@ -2276,7 +2247,7 @@ export default function ProductsPage() {
             </div>
           </SectionCard>
           <Dialog open={pickerOpen} onOpenChange={handlePickerOpenChange}>
-            <DialogContent className="!max-w-6xl max-h-[95vh] max-sm:max-h-screen  max-sm:overflow-y-auto ">
+            <DialogContent className="!max-w-6xl max-h-[95vh] max-sm:max-h-screen max-sm:overflow-y-auto">
               <DialogHeader>
                 <DialogTitle>Customize & Download Images</DialogTitle>
                 <DialogDescription>
@@ -2360,7 +2331,7 @@ export default function ProductsPage() {
                 </div>
               </div>
 
-              <div className=" h-[60vh] overflow-y-auto space-y-6 pr-1">
+              <div className="h-[60vh] overflow-y-auto space-y-6 pr-1">
                 {productsWithImages.map((rec) => {
                   const urls = (imagesById[rec.id] || []).filter(
                     (u) => !badUrls.has(u)
@@ -2460,15 +2431,23 @@ export default function ProductsPage() {
                                     : ""
                                 }`}
                                 title={u}
+                                onClick={() => {
+                                  if (!productChecked) return;
+                                  dispatch(
+                                    productsSlice.actions.toggleSelectImage({
+                                      id: rec.id,
+                                      url: u,
+                                      checked: !checked,
+                                    })
+                                  );
+                                }}
                               >
                                 <label
                                   htmlFor={
                                     productChecked ? checkboxId : undefined
                                   }
                                   className="aspect-square w-full bg-white rounded overflow-hidden"
-                                  onClick={(e) => {
-                                    if (!productChecked) e.preventDefault();
-                                  }}
+                                  onClick={(e) => e.stopPropagation()}
                                 >
                                   <Image
                                     width={200}
@@ -2583,7 +2562,7 @@ export default function ProductsPage() {
                   {previewShownName}
                 </DialogDescription>
               </DialogHeader>
-              <div className="relative bg-muted/50 rounded-lg border lg:max-h-[60vh] 3xl:max-h-auto    max-lg:h-[60vh] overflow-y-auto space-y-6 pr-1 overflow-hidden">
+              <div className="relative bg-muted/50 rounded-lg border lg:max-h-[60vh] 3xl:max-h-auto max-lg:h-[60vh] overflow-y-auto space-y-6 pr-1 overflow-hidden">
                 <div className="aspect-video w-full flex items-center justify-center p-4">
                   {safeUrl ? (
                     <Image
@@ -2733,6 +2712,7 @@ export default function ProductsPage() {
     </div>
   );
 }
+
 const WalletIcon = ({ className }) => (
   <svg
     xmlns="http://www.w3.org/2000/svg"
