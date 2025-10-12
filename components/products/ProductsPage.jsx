@@ -636,10 +636,26 @@ export default function ProductsPage() {
   const [modalSelectedProductIds, setModalSelectedProductIds] = React.useState(
     new Set()
   );
+  // NEW: State to track the count of selected images
+  const [selectedImagesCount, setSelectedImagesCount] = React.useState(0);
   React.useEffect(() => {
     if (pickerOpen) {
       const ids = new Set(productsWithImages.map((p) => p.id));
       setModalSelectedProductIds(ids);
+      // NEW: Initialize selectedImagesCount based on the current state
+      let count = 0;
+      productsWithImages.forEach((product) => {
+        const urls = (imagesById[product.id] || []).filter(
+          (u) => !badUrls.has(u)
+        );
+        const chosen = (selectedImagesById[product.id] || []).filter(
+          (u) => !badUrls.has(u)
+        );
+        if (modalSelectedProductIds.has(product.id)) {
+          count += chosen.length;
+        }
+      });
+      setSelectedImagesCount(count);
       if (filenameBaseField === "barcode" && !hasAnyBarcodes) {
         dispatch(
           productsSlice.actions.setFilenameBaseField(pickFallbackBase())
@@ -654,71 +670,100 @@ export default function ProductsPage() {
     pickFallbackBase,
     dispatch,
   ]);
-
-  // ✅ NEW: toggle all products AND their images
-  const toggleAllProductsAndImages = (checked) => {
-    if (checked) {
-      const allProductIds = new Set(productsWithImages.map((p) => p.id));
-      setModalSelectedProductIds(allProductIds);
-
-      // Select all images for every product
-      productsWithImages.forEach((rec) => {
-        const urls = (imagesById[rec.id] || []).filter((u) => !badUrls.has(u));
-        urls.forEach((u) =>
-          dispatch(
-            productsSlice.actions.toggleSelectImage({
-              id: rec.id,
-              url: u,
-              checked: true,
-            })
-          )
-        );
-      });
-    } else {
-      setModalSelectedProductIds(new Set());
-      // Deselect all images
-      productsWithImages.forEach((rec) => {
-        const urls = (selectedImagesById[rec.id] || []).filter(
-          (u) => !badUrls.has(u)
-        );
-        urls.forEach((u) =>
-          dispatch(
-            productsSlice.actions.toggleSelectImage({
-              id: rec.id,
-              url: u,
-              checked: false,
-            })
-          )
-        );
-      });
-    }
-  };
-
-  const allModalProductsChecked =
+  const allChecked =
     productsWithImages.length > 0 &&
     productsWithImages.every((p) => modalSelectedProductIds.has(p.id));
-
-  const someModalProductsChecked =
-    !allModalProductsChecked &&
+  const someChecked =
+    !allChecked &&
     productsWithImages.some((p) => modalSelectedProductIds.has(p.id));
-
   const handlePickerOpenChange = (v) => {
     if (zipLoading) return;
     setPickerOpen(v);
     if (!v) setPickerScopeId(null);
   };
 
+  // ✅ NEW: Toggle all products AND their images
+  const toggleAllProductsInModal = (checked) => {
+    if (checked) {
+      const ids = new Set(productsWithImages.map((p) => p.id));
+      setModalSelectedProductIds(ids);
+      // NEW: When selecting all products, also select all their images
+      let count = 0;
+      productsWithImages.forEach((rec) => {
+        const urls = (imagesById[rec.id] || []).filter((u) => !badUrls.has(u));
+        urls.forEach((u) => {
+          dispatch(
+            productsSlice.actions.toggleSelectImage({
+              id: rec.id,
+              url: u,
+              checked: true,
+            })
+          );
+        });
+        count += urls.length; // Add all images for this product
+      });
+      setSelectedImagesCount(count);
+    } else {
+      setModalSelectedProductIds(new Set());
+      // NEW: When deselecting all products, also deselect all their images
+      productsWithImages.forEach((rec) => {
+        const urls = (imagesById[rec.id] || []).filter((u) => !badUrls.has(u));
+        urls.forEach((u) => {
+          dispatch(
+            productsSlice.actions.toggleSelectImage({
+              id: rec.id,
+              url: u,
+              checked: false,
+            })
+          );
+        });
+      });
+      setSelectedImagesCount(0);
+    }
+  };
+
+  // ✅ NEW: Function to update selectedImagesCount whenever modalSelectedProductIds or selectedImagesById changes
+  const updateSelectedImagesCount = React.useCallback(() => {
+    let count = 0;
+    productsWithImages.forEach((product) => {
+      const urls = (imagesById[product.id] || []).filter(
+        (u) => !badUrls.has(u)
+      );
+      const chosen = (selectedImagesById[product.id] || []).filter(
+        (u) => !badUrls.has(u)
+      );
+      if (modalSelectedProductIds.has(product.id)) {
+        count += chosen.length;
+      }
+    });
+    setSelectedImagesCount(count);
+  }, [
+    productsWithImages,
+    selectedImagesById,
+    modalSelectedProductIds,
+    badUrls,
+  ]);
+  React.useEffect(() => {
+    updateSelectedImagesCount();
+  }, [updateSelectedImagesCount]);
+
+  // ✅ NEW: Memoized download selections based on selectedImagesCount
   const downloadSelections = React.useMemo(() => {
     if (!productsWithImages.length) return [];
-    if (modalSelectedProductIds.size === 0) return [];
-    return allDownloadSelections.filter((f) =>
-      modalSelectedProductIds.has(f.id)
+    if (selectedImagesCount === 0) return [];
+    return allDownloadSelections.filter(
+      (f) =>
+        modalSelectedProductIds.has(f.id) &&
+        selectedImagesById[f.id]?.some((url) => !badUrls.has(url))
     );
-  }, [allDownloadSelections, modalSelectedProductIds, productsWithImages]);
-  const selectedImagesCount = React.useMemo(
-    () => downloadSelections.length,
-    [downloadSelections]
-  );
+  }, [
+    allDownloadSelections,
+    modalSelectedProductIds,
+    selectedImagesById,
+    badUrls,
+    productsWithImages,
+    selectedImagesCount,
+  ]);
 
   /* ---------- preview modal ---------- */
   const [previewOpen, setPreviewOpen] = React.useState(false);
@@ -797,6 +842,7 @@ export default function ProductsPage() {
     () => filteredRows.map((r) => deepCopy(r)),
     [filteredRows]
   );
+  // ✅ NEW: Track visible row IDs
   const [visibleRowIds, setVisibleRowIds] = useState(new Set());
   const updateVisibleRowIds = useCallback(() => {
     if (!gridRef.current) return;
@@ -986,7 +1032,7 @@ export default function ProductsPage() {
 
   /* ---------- token configs & wallet ---------- */
   const {
-    data: tokenDeduxDoc,
+    tokenDeduxDoc,
     loading: status,
     error: rr,
   } = useSelector((state) => state.tokenDedux);
@@ -1348,6 +1394,7 @@ export default function ProductsPage() {
 
   /* ---------- grid image cell ---------- */
   const ImageCell = ({ data }) => {
+    // ✅ Only render if row is currently visible
     const isVisible = visibleRowIds.has(data?.id);
     if (!isVisible) {
       return <div className="text-muted-foreground text-xs">Loading...</div>;
@@ -2246,8 +2293,10 @@ export default function ProductsPage() {
               </DataGrid>
             </div>
           </SectionCard>
+
+          {/* ✅ MODAL: Customize & Download Images — Full functionality preserved */}
           <Dialog open={pickerOpen} onOpenChange={handlePickerOpenChange}>
-            <DialogContent className="!max-w-6xl max-h-[95vh] max-sm:max-h-screen max-sm:overflow-y-auto">
+            <DialogContent className="!max-w-6xl max-h-[100vh] max-sm:max-h-screen overflow-y-auto">
               <DialogHeader>
                 <DialogTitle>Customize & Download Images</DialogTitle>
                 <DialogDescription>
@@ -2255,6 +2304,34 @@ export default function ProductsPage() {
                   before downloading.
                 </DialogDescription>
               </DialogHeader>
+              {/* ✅ Header with Select All checkbox and Total Products */}
+              <div className="mb-4 px-4">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center space-x-2">
+                    <input
+                      type="checkbox"
+                      id="modal-select-all-products"
+                      checked={allChecked}
+                      ref={(el) => {
+                        if (el) el.indeterminate = someChecked && !allChecked;
+                      }}
+                      onChange={(e) =>
+                        toggleAllProductsInModal(e.target.checked)
+                      }
+                      className="rounded"
+                    />
+                    <Label
+                      htmlFor="modal-select-all-products"
+                      className="text-sm mt-1.5 font-medium"
+                    >
+                      Select All Products
+                    </Label>
+                  </div>
+                  <span className="text-sm text-muted-foreground">
+                    Total Products: {productsWithImages.length}
+                  </span>
+                </div>
+              </div>
               <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 mb-6 p-4 bg-muted/50 rounded-lg">
                 <div className="space-y-2">
                   <Label className="text-xs">Base Name</Label>
@@ -2309,28 +2386,6 @@ export default function ProductsPage() {
                   </StatusBadge>
                 </div>
               </div>
-
-              {/* ✅ NEW: Select All Header */}
-              <div className="px-4 mb-4">
-                <div className="flex items-center space-x-2">
-                  <input
-                    type="checkbox"
-                    id="modal-select-all"
-                    checked={allModalProductsChecked}
-                    ref={(el) => {
-                      if (el) el.indeterminate = someModalProductsChecked;
-                    }}
-                    onChange={(e) =>
-                      toggleAllProductsAndImages(e.target.checked)
-                    }
-                    className="rounded"
-                  />
-                  <Label htmlFor="modal-select-all" className="text-sm">
-                    Select All Products & Images
-                  </Label>
-                </div>
-              </div>
-
               <div className="h-[60vh] overflow-y-auto space-y-6 pr-1">
                 {productsWithImages.map((rec) => {
                   const urls = (imagesById[rec.id] || []).filter(
@@ -2386,12 +2441,48 @@ export default function ProductsPage() {
                                 setModalSelectedProductIds((prev) =>
                                   new Set(prev).add(rec.id)
                                 );
+                                // NEW: When a product is selected, also select all its images
+                                let countChange = 0;
+                                urls.forEach((u) => {
+                                  const alreadySelected = chosen.includes(u);
+                                  if (!alreadySelected) {
+                                    dispatch(
+                                      productsSlice.actions.toggleSelectImage({
+                                        id: rec.id,
+                                        url: u,
+                                        checked: true,
+                                      })
+                                    );
+                                    countChange++;
+                                  }
+                                });
+                                setSelectedImagesCount(
+                                  (prev) => prev + countChange
+                                );
                               } else {
                                 setModalSelectedProductIds((prev) => {
                                   const next = new Set(prev);
                                   next.delete(rec.id);
                                   return next;
                                 });
+                                // NEW: When a product is deselected, also deselect all its images
+                                let countChange = 0;
+                                urls.forEach((u) => {
+                                  const wasSelected = chosen.includes(u);
+                                  if (wasSelected) {
+                                    dispatch(
+                                      productsSlice.actions.toggleSelectImage({
+                                        id: rec.id,
+                                        url: u,
+                                        checked: false,
+                                      })
+                                    );
+                                    countChange++;
+                                  }
+                                });
+                                setSelectedImagesCount(
+                                  (prev) => prev - countChange
+                                );
                               }
                             }}
                             className="rounded"
@@ -2433,12 +2524,16 @@ export default function ProductsPage() {
                                 title={u}
                                 onClick={() => {
                                   if (!productChecked) return;
+                                  const newChecked = !checked;
                                   dispatch(
                                     productsSlice.actions.toggleSelectImage({
                                       id: rec.id,
                                       url: u,
-                                      checked: !checked,
+                                      checked: newChecked,
                                     })
+                                  );
+                                  setSelectedImagesCount((prev) =>
+                                    newChecked ? prev + 1 : prev - 1
                                   );
                                 }}
                               >
@@ -2476,17 +2571,21 @@ export default function ProductsPage() {
                                     type="checkbox"
                                     className="rounded"
                                     checked={checked}
-                                    onChange={(e) =>
+                                    onChange={(e) => {
+                                      const isChecked = e.target.checked;
                                       dispatch(
                                         productsSlice.actions.toggleSelectImage(
                                           {
                                             id: rec.id,
                                             url: u,
-                                            checked: e.target.checked,
+                                            checked: isChecked,
                                           }
                                         )
-                                      )
-                                    }
+                                      );
+                                      setSelectedImagesCount((prev) =>
+                                        isChecked ? prev + 1 : prev - 1
+                                      );
+                                    }}
                                     disabled={!productChecked}
                                   />
                                   {checked && (
@@ -2526,7 +2625,7 @@ export default function ProductsPage() {
                 <ActionButton
                   icon={DownloadIcon}
                   onClick={downloadSelectedImages}
-                  disabled={zipLoading || downloadSelections.length === 0}
+                  disabled={zipLoading || selectedImagesCount === 0}
                   variant="default"
                 >
                   {zipLoading ? (
@@ -2535,7 +2634,7 @@ export default function ProductsPage() {
                       Downloading...
                     </>
                   ) : (
-                    `Download (${downloadSelections.length} images)`
+                    `Download (${selectedImagesCount} images)`
                   )}
                 </ActionButton>
               </DialogFooter>
@@ -2552,8 +2651,9 @@ export default function ProductsPage() {
               )}
             </DialogContent>
           </Dialog>
+
           <Dialog open={previewOpen} onOpenChange={closePreview}>
-            <DialogContent className="!max-w-6xl max-sm:overflow-y-auto max-h-[95vh]">
+            <DialogContent className="!max-w-6xl max-h-[100vh] max-sm:max-h-screen overflow-y-auto">
               <DialogHeader>
                 <DialogTitle className="truncate">
                   {previewBaseName || "Image Preview"}
@@ -2562,7 +2662,7 @@ export default function ProductsPage() {
                   {previewShownName}
                 </DialogDescription>
               </DialogHeader>
-              <div className="relative bg-muted/50 rounded-lg border lg:max-h-[60vh] 3xl:max-h-auto max-lg:h-[60vh] overflow-y-auto space-y-6 pr-1 overflow-hidden">
+              <div className="relative bg-muted/50 rounded-lg border lg:max-h-[60vh] 3xl:max-h-auto    max-lg:h-[60vh] overflow-y-auto space-y-6 pr-1 overflow-hidden">
                 <div className="aspect-video w-full flex items-center justify-center p-4">
                   {safeUrl ? (
                     <Image
