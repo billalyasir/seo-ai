@@ -30,18 +30,28 @@ export async function GET(request) {
   if (!url) return new Response("Missing url", { status: 400 });
 
   try {
+    // Fetch the image from the remote server
     const upstream = await fetch(url, { cache: "no-store" });
+
+    // If the upstream server returns an error, return it to the client
     if (!upstream.ok) {
+      console.warn(`Upstream error for ${url}: ${upstream.status}`);
       return new Response("Upstream error", { status: upstream.status });
     }
+
+    // Get the content type from the upstream response
     const ct =
       upstream.headers.get("content-type") || "application/octet-stream";
+
+    // Read the image data as an ArrayBuffer
     const ab = await upstream.arrayBuffer();
+
+    // Return the image to the client with CORS headers
     return new Response(ab, {
       headers: {
         "Content-Type": ct,
         "Cache-Control": "public, max-age=86400",
-        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Origin": "*", // ✅ This is the key line to fix CORS
       },
     });
   } catch (e) {

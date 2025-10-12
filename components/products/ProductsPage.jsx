@@ -1264,38 +1264,43 @@ export default function ProductsPage() {
   // ✅ REMOVED: postZip function (no longer needed)
 
   // ✅ NEW: Client-side ZIP download
+
   const downloadSelectedImages = React.useCallback(async () => {
     if (!downloadSelections.length || zipLoading) return;
     setZipLoading(true);
 
     try {
       const zip = new JSZip();
-      const batchSize = 10; // Process in batches to avoid overwhelming the browser
+      const batchSize = 10; // Process 10 images at a time to avoid overwhelming the browser
 
       for (let i = 0; i < downloadSelections.length; i += batchSize) {
         const batch = downloadSelections.slice(i, i + batchSize);
-        await Promise.all(
-          batch.map(async (item) => {
-            try {
-              const response = await fetch(
-                `/api/images-zip?url=${encodeURIComponent(item.url)}`
-              );
-              if (!response.ok) {
-                console.warn(`Skipping image ${item.url}: ${response.status}`);
-                return;
-              }
-              const blob = await response.blob();
-              zip.file(item.filename, blob);
-            } catch (err) {
-              console.warn(
-                `Failed to add image ${item.url} to ZIP:`,
-                err.message
-              );
+
+        const batchPromises = batch.map(async (item) => {
+          try {
+            // Fetch the image via the GET endpoint
+            const response = await fetch(
+              `/api/images-zip?url=${encodeURIComponent(item.url)}`
+            );
+            if (!response.ok) {
+              console.warn(`Skipping image ${item.url}: ${response.status}`);
+              return; // Skip this image
             }
-          })
-        );
+            const blob = await response.blob();
+            zip.file(item.filename, blob);
+          } catch (err) {
+            console.warn(
+              `Failed to add image ${item.url} to ZIP:`,
+              err.message
+            );
+          }
+        });
+
+        // Wait for all images in this batch to be fetched
+        await Promise.all(batchPromises);
       }
 
+      // Generate the final ZIP file
       const content = await zip.generateAsync({ type: "blob" });
       const dateStr = new Date().toISOString().slice(0, 10);
       saveAs(content, `product-images-${dateStr}.zip`);
@@ -1312,7 +1317,6 @@ export default function ProductsPage() {
       setZipLoading(false);
     }
   }, [downloadSelections, zipLoading]);
-
   const downloadCurrentPreview = React.useCallback(async () => {
     if (!currentUrl || !currentProduct) return;
     setSingleDownloading(true);
