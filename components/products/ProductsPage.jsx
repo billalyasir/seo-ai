@@ -2242,7 +2242,12 @@ export default function ProductsPage() {
                 <FilterRow visible />
                 <ColumnChooser enabled />
                 <ColumnFixing enabled />
-                <Column type="selection" width={40} headerCellRender={selectVisibleHeader} fixed />
+                <Column
+                  type="selection"
+                  width={40}
+                  fixed
+                  headerCellRender={selectVisibleHeader}
+                />
                 <Column
                   caption="#"
                   width={60}
