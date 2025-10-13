@@ -1444,46 +1444,7 @@ export default function ProductsPage() {
       </div>
     );
   };
-  /* ---------- NEW: Select Visible Header Render ---------- */
-  const selectVisibleHeader = useCallback(
-    (cellInfo) => {
-      const { component: grid } = cellInfo;
-      const visibleRows = grid.getVisibleRows();
-      const visibleIds = visibleRows.map((vr) => vr.data?.id).filter(Boolean);
-      const allSelected =
-        visibleIds.length > 0 &&
-        visibleIds.every((id) => selected.includes(id));
-      const someSelected =
-        !allSelected && visibleIds.some((id) => selected.includes(id));
-      const handleChange = (e) => {
-        if (e.target.checked) {
-          const toAdd = visibleIds.filter((id) => !selected.includes(id));
-          if (toAdd.length > 0) {
-            dispatch(
-              productsSlice.actions.setSelected([...selected, ...toAdd])
-            );
-          }
-        } else {
-          const newSelected = selected.filter((id) => !visibleIds.includes(id));
-          dispatch(productsSlice.actions.setSelected(newSelected));
-        }
-      };
-      return (
-        <div className="flex mt-2.5 items-center justify-center">
-          <input
-            type="checkbox"
-            checked={allSelected}
-            ref={(el) => {
-              if (el) el.indeterminate = someSelected;
-            }}
-            onChange={handleChange}
-            className="rounded"
-          />
-        </div>
-      );
-    },
-    [selected, dispatch]
-  );
+
   /* ---------- Toolbars ---------- */
   const SeoToolbar = () => (
     <SectionCard
@@ -2242,12 +2203,7 @@ export default function ProductsPage() {
                 <FilterRow visible />
                 <ColumnChooser enabled />
                 <ColumnFixing enabled />
-                <Column
-                  type="selection"
-                  width={40}
-                  fixed
-                  headerCellRender={selectVisibleHeader}
-                />
+                <Column type="selection" width={40} fixed />
                 <Column
                   caption="#"
                   width={60}
