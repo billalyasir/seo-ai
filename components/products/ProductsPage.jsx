@@ -633,9 +633,8 @@ export default function ProductsPage() {
     ).filter((r) => Array.isArray(imagesById[r.id]) && imagesById[r.id].length);
     return list;
   }, [rows, imagesById, pickerScopeId]);
-  const [modalSelectedProductIds, setModalSelectedProductIds] = React.useState(
-    new Set()
-  );
+  const [modalSelectedProductIds, setModalSelectedProductIds] =
+    React.useState(new Set());
   // NEW: State to track the count of selected images
   const [selectedImagesCount, setSelectedImagesCount] = React.useState(0);
   React.useEffect(() => {
@@ -1469,7 +1468,10 @@ export default function ProductsPage() {
         }
       };
       return (
-        <div className="flex mt-2.5 items-center justify-center">
+        <div
+          className="flex mt-2.5 items-center justify-center"
+          onClick={(e) => e.stopPropagation()}
+        >
           <input
             type="checkbox"
             checked={allSelected}
@@ -2223,15 +2225,7 @@ export default function ProductsPage() {
                   )
                 }
                 selectedRowKeys={[...selected]}
-                onCellPrepared={(e) => {
-                  if (
-                    e.rowType === "header" &&
-                    e.column?.type === "selection"
-                  ) {
-                    e.cellElement.innerHTML = "";
-                    e.cellElement.style.pointerEvents = "none";
-                  }
-                }}
+                /* ❌ FIX: removed onCellPrepared that cleared the header cell and disabled clicks */
               >
                 <Selection
                   mode="multiple"
