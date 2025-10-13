@@ -97,7 +97,9 @@ import Spinner from "@/components/ui/Spinner";
 import { fetchTokenDedux } from "@/lib/redux/slices/tokenDeduxSlice";
 import { fetchUserToken } from "@/lib/redux/slices/userTokenSlice";
 import Pricing from "../sections/Pricing";
-
+// ✅ NEW: Import JSZip and file-saver
+import JSZip from "jszip";
+import { saveAs } from "file-saver";
 /* -------------------- local utils -------------------- */
 const deepCopy = (obj) => JSON.parse(JSON.stringify(obj));
 function humanSize(bytes = 0) {
@@ -134,7 +136,6 @@ function prettyCaption(key) {
     .replace(/^./, (c) => c.toUpperCase())
     .trim();
 }
-
 /* ======================= NEW: simple localStorage helpers ======================= */
 const STORAGE_KEYS = {
   rows: "products_csv_rows",
@@ -161,7 +162,6 @@ function safeRemoveItem(key) {
     window.localStorage.removeItem(key);
   } catch {}
 }
-
 /* ======================= Reusable Components ======================= */
 const SectionCard = ({ title, description, children, className = "" }) => (
   <Card className={`mb-6 ${className}`}>
@@ -219,7 +219,6 @@ const StatusBadge = ({ children, variant = "default" }) => (
     {children}
   </Badge>
 );
-
 /* ======================= Column Selection Dropdowns ======================= */
 function ColumnDropdownSingle({ label, value, options, onSelect, icon: Icon }) {
   const [open, setOpen] = React.useState(false);
@@ -492,11 +491,11 @@ function ColumnDropdownMulti({
     </div>
   );
 }
-
 /* ======================= PAGE ======================= */
 export default function ProductsPage() {
   const { CSVReader } = useCSVReader();
   const dispatch = useAppDispatch();
+  const [uploading, setUploading] = useState(false);
   React.useEffect(() => {
     dispatch(fetchTokenDedux());
   }, [dispatch]);
@@ -524,7 +523,6 @@ export default function ProductsPage() {
     () => rows.some((r) => String(r?.barcode ?? "").trim().length > 0),
     [rows]
   );
-
   /* ---------- broken-image tracking ---------- */
   const [badUrls, setBadUrls] = React.useState(new Set());
   const markBroken = (u) =>
@@ -534,7 +532,6 @@ export default function ProductsPage() {
       next.add(u);
       return next;
     });
-
   /* ---------- columns ---------- */
   const availableColumns = React.useMemo(() => {
     const allKeys = new Set();
@@ -568,7 +565,6 @@ export default function ProductsPage() {
     [availableColumns]
   );
   const showBarcodeCol = hasAnyBarcodes;
-
   /* ---------- defaults & smart fallbacks ---------- */
   React.useEffect(() => {
     if (!seoSourceCols.length && availableColumns.length) {
@@ -612,7 +608,6 @@ export default function ProductsPage() {
     hasAnyBarcodes,
     pickFallbackBase,
   ]);
-
   /* ---------- toggle show only selected ---------- */
   const [showOnlySelected, setShowOnlySelected] = React.useState(false);
   const filteredRows = React.useMemo(() => {
@@ -622,7 +617,6 @@ export default function ProductsPage() {
     }
     return rows;
   }, [rows, selected, showOnlySelected]);
-
   /* ---------- customize / picker ---------- */
   const [pickerOpen, setPickerOpen] = React.useState(false);
   const [pickerScopeId, setPickerScopeId] = React.useState(null);
@@ -633,123 +627,72 @@ export default function ProductsPage() {
     ).filter((r) => Array.isArray(imagesById[r.id]) && imagesById[r.id].length);
     return list;
   }, [rows, imagesById, pickerScopeId]);
+  // ✅ Tracks which products are included in the modal AND controls product-level select-all for images
   const [modalSelectedProductIds, setModalSelectedProductIds] = React.useState(
     new Set()
   );
-
-  // ✅ NEW: Modal readiness and auto-selection
-  const [modalReady, setModalReady] = useState(false);
-
   React.useEffect(() => {
     if (pickerOpen) {
       const ids = new Set(productsWithImages.map((p) => p.id));
       setModalSelectedProductIds(ids);
-      setModalReady(false);
-
-      let hasChanges = false;
-      productsWithImages.forEach((product) => {
-        const urls = (imagesById[product.id] || []).filter(
-          (u) => !badUrls.has(u)
-        );
-        const currentlySelected = selectedImagesById[product.id] || [];
-        const selectedSet = new Set(currentlySelected);
-
-        urls.forEach((url) => {
-          if (!selectedSet.has(url)) {
-            dispatch(
-              productsSlice.actions.toggleSelectImage({
-                id: product.id,
-                url,
-                checked: true,
-              })
-            );
-            hasChanges = true;
-          }
-        });
-      });
-
       if (filenameBaseField === "barcode" && !hasAnyBarcodes) {
         dispatch(
           productsSlice.actions.setFilenameBaseField(pickFallbackBase())
         );
       }
-
-      if (hasChanges) {
-        setTimeout(() => setModalReady(true), 0);
-      } else {
-        setModalReady(true);
-      }
-    } else {
-      setModalReady(false);
     }
   }, [
     pickerOpen,
     productsWithImages,
-    imagesById,
-    badUrls,
-    selectedImagesById,
     filenameBaseField,
     hasAnyBarcodes,
     pickFallbackBase,
     dispatch,
   ]);
-
-  const handlePickerOpenChange = (v) => {
-    if (zipLoading) return;
-    if (!v) {
-      setModalReady(false);
-      setPickerScopeId(null);
-    }
-    setPickerOpen(v);
-  };
-
-  // ✅ CRITICAL FIX: Compute selections directly if Redux hasn't updated yet
-  const downloadSelections = React.useMemo(() => {
-    if (!productsWithImages.length) return [];
-    if (modalSelectedProductIds.size === 0) return [];
-
-    const fromRedux = allDownloadSelections.filter((f) =>
-      modalSelectedProductIds.has(f.id)
-    );
-
-    if (fromRedux.length > 0) return fromRedux;
-
-    // Fallback: build selections manually
-    const fallback = [];
-    productsWithImages.forEach((rec) => {
-      if (!modalSelectedProductIds.has(rec.id)) return;
-      const urls = (imagesById[rec.id] || []).filter((u) => !badUrls.has(u));
-      const base = makeBaseName(rec, filenameBaseField) || String(rec.id);
-      urls.forEach((url) => {
-        const ext = inferExt(url);
-        fallback.push({ url, filename: `${base}${ext}`, id: rec.id });
-      });
-    });
-    return fallback;
-  }, [
-    allDownloadSelections,
-    modalSelectedProductIds,
-    productsWithImages,
-    imagesById,
-    badUrls,
-    filenameBaseField,
-  ]);
-
-  const selectedImagesCount = downloadSelections.length;
-
   const allChecked =
     productsWithImages.length > 0 &&
     productsWithImages.every((p) => modalSelectedProductIds.has(p.id));
   const someChecked =
     !allChecked &&
     productsWithImages.some((p) => modalSelectedProductIds.has(p.id));
-
-  const toggleAllProductsInModal = (checked) => {
-    if (checked)
-      setModalSelectedProductIds(new Set(productsWithImages.map((p) => p.id)));
-    else setModalSelectedProductIds(new Set());
+  const handlePickerOpenChange = (v) => {
+    if (zipLoading) return;
+    setPickerOpen(v);
+    if (!v) setPickerScopeId(null);
   };
+  /* ---------- selection helpers for modal ---------- */
+  const downloadSelections = React.useMemo(() => {
+    const selections = [];
 
+    if (!selectedImagesById || !rows) return selections;
+
+    for (const productId in selectedImagesById) {
+      const product = rows.find((r) => String(r.id) === String(productId));
+      if (!product) continue;
+
+      const baseName =
+        makeBaseName(product, filenameBaseField) || String(product.id);
+      const validUrls = selectedImagesById[productId].filter(
+        (url) => !badUrls.has(url)
+      );
+
+      validUrls.forEach((url, index) => {
+        const ext = inferExt(url);
+        const filename =
+          index === 0
+            ? `${baseName}${ext}`
+            : `${baseName}${filenameSeparator}${index}${ext}`;
+        selections.push({ id: product.id, filename, url });
+      });
+    }
+
+    return selections;
+  }, [selectedImagesById, rows, filenameBaseField, filenameSeparator, badUrls]);
+
+  const selectedImagesCount = React.useMemo(
+    () => downloadSelections.length,
+    [downloadSelections]
+  );
   /* ---------- preview modal ---------- */
   const [previewOpen, setPreviewOpen] = React.useState(false);
   const [previewProductId, setPreviewProductId] = React.useState(null);
@@ -798,7 +741,6 @@ export default function ProductsPage() {
     if (!currentUrls.length) return;
     setPreviewIndex((i) => (i + 1) % currentUrls.length);
   };
-
   /* ---------- preview names ---------- */
   const previewBaseName = React.useMemo(() => {
     if (!currentProduct) return "";
@@ -820,13 +762,13 @@ export default function ProductsPage() {
     const ext = inferExt(currentUrl);
     return `${previewBaseName}${ext}`;
   }, [previewBaseName, currentUrl]);
-
   /* ---------- grid ---------- */
   const gridRef = React.useRef(null);
   const dataSource = React.useMemo(
     () => filteredRows.map((r) => deepCopy(r)),
     [filteredRows]
   );
+  // ✅ NEW: Track visible row IDs
   const [visibleRowIds, setVisibleRowIds] = useState(new Set());
   const updateVisibleRowIds = useCallback(() => {
     if (!gridRef.current) return;
@@ -834,29 +776,59 @@ export default function ProductsPage() {
     const ids = new Set(visibleRows.map((vr) => vr.data?.id).filter(Boolean));
     setVisibleRowIds(ids);
   }, []);
-
   /* ---------- upload ---------- */
   const onUpload = React.useCallback(
     (results, file) => {
-      const { rows: withIds } = parseCsvResultsToRows(results);
-      dispatch(productsSlice.actions.setRows(deepCopy(withIds)));
-      dispatch(
-        productsSlice.actions.setAcceptedInfo({
-          name: file?.name,
+      const MAX_FILE_SIZE = 20 * 1024 * 1024; // 20 MB in bytes
+      if (file && file.size > MAX_FILE_SIZE) {
+        toast.error(
+          "File size must not exceed 20 MB. Please select a file under 20 MB.",
+          {
+            style: {
+              backgroundColor: "#ef4444",
+              color: "white",
+            },
+          }
+        );
+        return;
+      }
+      const uploadToast = toast.loading("Uploading and processing CSV file...");
+      setUploading(true);
+      try {
+        const { rows: withIds } = parseCsvResultsToRows(results);
+        dispatch(productsSlice.actions.setRows(deepCopy(withIds)));
+        dispatch(
+          productsSlice.actions.setAcceptedInfo({
+            name: file?.name,
+            size: file?.size || 0,
+          })
+        );
+        dispatch(productsSlice.actions.setProgress({ total: 0, completed: 0 }));
+        safeSetItem(STORAGE_KEYS.rows, withIds);
+        safeSetItem(STORAGE_KEYS.info, {
+          name: file?.name || "uploaded.csv",
           size: file?.size || 0,
-        })
-      );
-      dispatch(productsSlice.actions.setProgress({ total: 0, completed: 0 }));
-      safeSetItem(STORAGE_KEYS.rows, withIds);
-      safeSetItem(STORAGE_KEYS.info, {
-        name: file?.name || "uploaded.csv",
-        size: file?.size || 0,
-      });
-      toast.success("CSV loaded successfully");
+        });
+        toast.success("CSV loaded successfully", {
+          id: uploadToast,
+        });
+      } catch (error) {
+        toast.error(
+          "Failed to process CSV file. Please try again with a smaller file.",
+          {
+            id: uploadToast,
+            style: {
+              backgroundColor: "#ef4444",
+              color: "white",
+            },
+          }
+        );
+      } finally {
+        setUploading(false);
+      }
     },
     [dispatch]
   );
-
   /* ---------- CRUD ---------- */
   const onRowInserted = React.useCallback(
     (e) => {
@@ -891,7 +863,6 @@ export default function ProductsPage() {
     },
     [dispatch]
   );
-
   /* ---------- image fetch ---------- */
   const guardBarcode = () => {
     if (
@@ -899,7 +870,13 @@ export default function ProductsPage() {
       (imageQueryField === "barcode" && !hasAnyBarcodes)
     ) {
       toast.error(
-        "No barcodes found. Please choose a different 'Search by' column."
+        "No barcodes found. Please choose a different 'Search by' column.",
+        {
+          style: {
+            backgroundColor: "#ef4444",
+            color: "white",
+          },
+        }
       );
       return false;
     }
@@ -912,7 +889,12 @@ export default function ProductsPage() {
       ).unwrap();
       toast.success("Images generated successfully");
     } catch (e) {
-      toast.error(`Failed to generate images: ${e?.message || e}`);
+      toast.error(`Failed to generate images: ${e?.message || e}`, {
+        style: {
+          backgroundColor: "#ef4444",
+          color: "white",
+        },
+      });
     }
   };
   const loadAllImages = React.useCallback(
@@ -996,7 +978,6 @@ export default function ProductsPage() {
     },
     [selected, imageQueryField, hasAnyBarcodes]
   );
-
   /* ---------- selection helpers ---------- */
   const selectAll = React.useCallback(() => {
     const allIds = filteredRows.map((r) => r.id);
@@ -1013,7 +994,6 @@ export default function ProductsPage() {
     filteredRows.every((r) => selected.includes(r.id));
   const someRowsChecked =
     !allRowsChecked && filteredRows.some((r) => selected.includes(r.id));
-
   /* ---------- token configs & wallet ---------- */
   const {
     data: tokenDeduxDoc,
@@ -1084,7 +1064,6 @@ export default function ProductsPage() {
       estimated_for_images.total_products,
       walletAvailable,
     ]);
-
   /* ---------- SEO actions ---------- */
   const runGenerateSEOForIds = React.useCallback(
     async (ids) => {
@@ -1094,7 +1073,12 @@ export default function ProductsPage() {
         toast.success("SEO generated successfully");
         dispatch(fetchUserToken());
       } catch (e) {
-        toast.error(`Failed to generate SEO: ${e?.message || e}`);
+        toast.error(`Failed to generate SEO: ${e?.message || e}`, {
+          style: {
+            backgroundColor: "#ef4444",
+            color: "white",
+          },
+        });
       }
     },
     [dispatch]
@@ -1104,7 +1088,12 @@ export default function ProductsPage() {
       const productsCount = ids.length;
       if (!productsCount) return;
       if (!seoTargets || !seoTargets.length) {
-        toast.error("Select at least one SEO field to generate.");
+        toast.error("Select at least one SEO field to generate.", {
+          style: {
+            backgroundColor: "#ef4444",
+            color: "white",
+          },
+        });
         return;
       }
       setEstimated_for_seo({
@@ -1145,7 +1134,6 @@ export default function ProductsPage() {
       toast.dismiss();
     }
   }, [isProcessing]);
-
   /* ---------- export helpers ---------- */
   const getSeoRows = React.useCallback(() => {
     return rows.map((r) => ({
@@ -1206,7 +1194,12 @@ export default function ProductsPage() {
       XLSX.utils.book_append_sheet(wb, ws, "SEO");
       XLSX.writeFile(wb, "seo-data.xlsx");
     } catch (e) {
-      toast.error("Failed to export XLSX. Make sure 'xlsx' is installed.");
+      toast.error("Failed to export XLSX. Make sure 'xlsx' is installed.", {
+        style: {
+          backgroundColor: "#ef4444",
+          color: "white",
+        },
+      });
     }
   }, [getSeoRows]);
   const exportDOCX = React.useCallback(async () => {
@@ -1270,53 +1263,63 @@ export default function ProductsPage() {
           },
         ],
       });
-      const { saveAs } = await import("file-saver");
       const blob = await Packer.toBlob(doc);
       saveAs(blob, "seo-data.docx");
     } catch (e) {
-      console.error(e);
-      toast.error("Failed to export DOCX. Make sure 'docx' is installed.");
+      toast.error("Failed to export DOCX. Make sure 'docx' is installed.", {
+        style: {
+          backgroundColor: "#ef4444",
+          color: "white",
+        },
+      });
     }
   }, [getSeoRows]);
   const downloadSeoCsv = exportCSV;
-
-  /* ---------- ZIP posting ---------- */
-  const postZip = React.useCallback(async (files) => {
-    const res = await fetch(`${window.location.origin}/api/images-zip`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ files }),
-    });
-    if (!res.ok) throw new Error(`Zip failed: ${res.status}`);
-    return res.blob();
-  }, []);
+  // ✅ NEW: Client-side ZIP download
   const downloadSelectedImages = React.useCallback(async () => {
     if (!downloadSelections.length || zipLoading) return;
     setZipLoading(true);
     try {
-      const FileSaver = await import("file-saver");
-      const saveAs = FileSaver?.default || FileSaver?.saveAs;
-      if (typeof saveAs !== "function") throw new Error("saveAs not available");
-      const blob = await postZip(downloadSelections);
-      saveAs(
-        blob,
-        `product-images-${new Date().toISOString().slice(0, 10)}.zip`
-      );
+      const zip = new JSZip();
+      const batchSize = 10; // Process in batches to avoid overwhelming the browser
+      for (let i = 0; i < downloadSelections.length; i += batchSize) {
+        const batch = downloadSelections.slice(i, i + batchSize);
+        await Promise.all(
+          batch.map(async (item) => {
+            try {
+              const response = await fetch(
+                `/api/images-zip?url=${encodeURIComponent(item.url)}`
+              );
+              if (!response.ok) {
+                return;
+              }
+              const blob = await response.blob();
+              zip.file(item.filename, blob);
+            } catch (err) {}
+          })
+        );
+      }
+      const content = await zip.generateAsync({ type: "blob" });
+      const dateStr = new Date().toISOString().slice(0, 10);
+      saveAs(content, `product-images-${dateStr}.zip`);
       toast.success("Images archived and downloading…");
     } catch (err) {
-      toast.error(`Download failed: ${err?.message || err}`);
+      toast.error(`Download failed: ${err?.message || err}`, {
+        style: {
+          backgroundColor: "#ef4444",
+          color: "white",
+        },
+      });
     } finally {
       setZipLoading(false);
     }
-  }, [downloadSelections, zipLoading, postZip]);
+  }, [downloadSelections, zipLoading]);
   const downloadCurrentPreview = React.useCallback(async () => {
     if (!currentUrl || !currentProduct) return;
     setSingleDownloading(true);
     try {
       const response = await fetch(
-        `${window.location.origin}/api/images-zip?url=${encodeURIComponent(
-          currentUrl
-        )}`,
+        `/api/images-zip?url=${encodeURIComponent(currentUrl)}`,
         {
           method: "GET",
           headers: { "Cache-Control": "no-store" },
@@ -1334,12 +1337,16 @@ export default function ProductsPage() {
       window.URL.revokeObjectURL(url);
       toast.success("Image downloaded");
     } catch (e) {
-      toast.error(`Download failed: ${e?.message || e}`);
+      toast.error(`Download failed: ${e?.message || e}`, {
+        style: {
+          backgroundColor: "#ef4444",
+          color: "white",
+        },
+      });
     } finally {
       setSingleDownloading(false);
     }
   }, [currentUrl, currentProduct, previewDownloadName]);
-
   /* ---------- file chip ---------- */
   const FileChip = React.useCallback(
     () =>
@@ -1366,7 +1373,6 @@ export default function ProductsPage() {
       ) : null,
     [acceptedInfo, dispatch]
   );
-
   /* --------- preview helpers --------- */
   const displayUrls = React.useMemo(
     () => (currentUrls || []).filter((u) => !badUrls.has(u)),
@@ -1377,9 +1383,9 @@ export default function ProductsPage() {
     Math.max(0, displayUrls.length - 1)
   );
   const safeUrl = displayUrls[safeIndex];
-
   /* ---------- grid image cell ---------- */
   const ImageCell = ({ data }) => {
+    // ✅ Only render if row is currently visible
     const isVisible = visibleRowIds.has(data?.id);
     if (!isVisible) {
       return <div className="text-muted-foreground text-xs">Loading...</div>;
@@ -1429,7 +1435,6 @@ export default function ProductsPage() {
       </div>
     );
   };
-
   /* ---------- NEW: Select Visible Header Render ---------- */
   const selectVisibleHeader = useCallback(
     (cellInfo) => {
@@ -1470,7 +1475,6 @@ export default function ProductsPage() {
     },
     [selected, dispatch]
   );
-
   /* ---------- Toolbars ---------- */
   const SeoToolbar = () => (
     <SectionCard
@@ -1749,7 +1753,6 @@ export default function ProductsPage() {
       </SectionCard>
     );
   };
-
   /* ---------- NEW: restore from localStorage on first mount ---------- */
   useEffect(() => {
     if (acceptedInfo || (rows && rows.length > 0)) return;
@@ -1785,12 +1788,14 @@ export default function ProductsPage() {
       setShowOnlySelected(false);
     }
   }, [selected]);
+  // ✅ This toggles all images of a single product
   const toggleAllImagesForProduct = React.useCallback(
     (rec, checked) => {
       const urls = (imagesById[rec.id] || []).filter((u) => !badUrls.has(u));
       const chosen = (selectedImagesById[rec.id] || []).filter(
         (u) => !badUrls.has(u)
       );
+      // First, clear any current selections for this product
       chosen.forEach((u) =>
         dispatch(
           productsSlice.actions.toggleSelectImage({
@@ -1800,6 +1805,7 @@ export default function ProductsPage() {
           })
         )
       );
+      // Then, if checked, select all valid urls
       if (checked) {
         urls.forEach((u) =>
           dispatch(
@@ -1813,29 +1819,6 @@ export default function ProductsPage() {
       }
     },
     [dispatch, imagesById, selectedImagesById, badUrls]
-  );
-  const MAX_FILE_SIZE = 30 * 1024 * 1024; // 30 MB
-
-  /* ---------- RENDER ---------- */
-  const handleFileUpload = React.useCallback(
-    async (results, file) => {
-      try {
-        if (file?.size > MAX_FILE_SIZE) {
-          toast.error("File size must not exceed 30 MB.", {
-            style: { background: "#fee", color: "#c00" },
-            duration: 5000,
-          });
-          return;
-        }
-        onUpload(results, file);
-      } catch (err) {
-        toast.error("Upload failed. Please try again.", {
-          style: { background: "#fee", color: "#c00" },
-        });
-        console.error(err);
-      }
-    },
-    [onUpload]
   );
   if (!productsState) {
     return (
@@ -1856,16 +1839,24 @@ export default function ProductsPage() {
             <div className="p-6 border-2 border-dashed border-primary/50 rounded-xl bg-primary/5">
               <Package className="h-16 w-16 text-primary/50 mx-auto mb-4" />
               <CSVReader
-                onUploadAccepted={handleFileUpload}
-                config={{ header: true, skipEmptyLines: true }}
+                onUploadAccepted={(res, file) => onUpload(res, file)}
+                config={{ header: true, skipEmptyLines: true, worker: true }}
               >
                 {({ getRootProps }) => (
                   <ActionButton
                     icon={Paperclip}
                     {...getRootProps()}
                     className="mx-auto"
+                    disabled={uploading}
                   >
-                    Upload CSV File
+                    {uploading ? (
+                      <>
+                        <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                        Processing...
+                      </>
+                    ) : (
+                      "Upload CSV File"
+                    )}
                   </ActionButton>
                 )}
               </CSVReader>
@@ -1886,8 +1877,8 @@ export default function ProductsPage() {
                 {" "}
                 <FileChip />
                 <CSVReader
-                  onUploadAccepted={handleFileUpload}
-                  config={{ header: true, skipEmptyLines: true }}
+                  onUploadAccepted={(res, file) => onUpload(res, file)}
+                  config={{ header: true, skipEmptyLines: true, worker: true }}
                 >
                   {({ getRootProps }) => (
                     <ActionButton
@@ -1895,8 +1886,16 @@ export default function ProductsPage() {
                       icon={FilePlus2}
                       variant="outline"
                       {...getRootProps()}
+                      disabled={uploading}
                     >
-                      Replace CSV
+                      {uploading ? (
+                        <>
+                          <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                          Processing...
+                        </>
+                      ) : (
+                        "Replace CSV"
+                      )}
                     </ActionButton>
                   )}
                 </CSVReader>
@@ -2240,7 +2239,7 @@ export default function ProductsPage() {
                 columnAutoWidth
                 allowColumnReordering
                 allowColumnResizing
-                height="80vh"
+                height="70vh"
                 onInitialized={(e) => (gridRef.current = e.component)}
                 onContentReady={updateVisibleRowIds}
                 onOptionChanged={(e) => {
@@ -2365,8 +2364,7 @@ export default function ProductsPage() {
               </DataGrid>
             </div>
           </SectionCard>
-
-          {/* ✅ FIXED: Modal with auto-selection and fallback logic */}
+          {/* ✅ FIXED: Customize & Download Images Modal — product-level select/unselect now controls images */}
           <Dialog open={pickerOpen} onOpenChange={handlePickerOpenChange}>
             <DialogContent className="!max-w-6xl max-h-[100vh] max-sm:max-h-screen overflow-y-auto">
               <DialogHeader>
@@ -2376,311 +2374,345 @@ export default function ProductsPage() {
                   before downloading.
                 </DialogDescription>
               </DialogHeader>
-
-              {!modalReady ? (
-                <div className="flex justify-center py-12">
-                  <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-                </div>
-              ) : (
-                <>
-                  <div className="mb-4 px-4">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center space-x-2">
-                        <input
-                          type="checkbox"
-                          id="modal-select-all-products"
-                          checked={allChecked}
-                          ref={(el) => {
-                            if (el)
-                              el.indeterminate = someChecked && !allChecked;
-                          }}
-                          onChange={(e) =>
-                            toggleAllProductsInModal(e.target.checked)
-                          }
-                          className="rounded"
-                        />
-                        <Label
-                          htmlFor="modal-select-all-products"
-                          className="text-sm mt-1.5 font-medium"
-                        >
-                          Select All Products
-                        </Label>
-                      </div>
-                      <span className="text-sm text-muted-foreground">
-                        Total Products: {productsWithImages.length}
-                      </span>
-                    </div>
-                  </div>
-                  <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 mb-6 p-4 bg-muted/50 rounded-lg">
-                    <div className="space-y-2">
-                      <Label className="text-xs">Base Name</Label>
-                      <Select
-                        value={filenameBaseField}
-                        onValueChange={(value) =>
-                          dispatch(
-                            productsSlice.actions.setFilenameBaseField(value)
-                          )
-                        }
-                      >
-                        <SelectTrigger>
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {availableColumns.length ? (
-                            availableColumns
-                              .filter(
-                                (opt) =>
-                                  typeof opt === "string" && opt.trim() !== ""
-                              )
-                              .map((opt) => (
-                                <SelectItem key={opt} value={opt}>
-                                  {prettyCaption(opt)}
-                                </SelectItem>
-                              ))
-                          ) : (
-                            <SelectItem disabled>No columns</SelectItem>
-                          )}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                    <div className="space-y-2">
-                      <Label className="text-xs">Separator</Label>
-                      <Input
-                        value={filenameSeparator}
-                        onChange={(e) =>
-                          dispatch(
-                            productsSlice.actions.setFilenameSeparator(
-                              e.target.value
-                            )
-                          )
-                        }
-                        className="w-full"
-                        maxLength={3}
-                        placeholder="_"
-                      />
-                    </div>
-                    <div className="flex items-end">
-                      <StatusBadge variant="secondary">
-                        Selected: {selectedImagesCount} images
-                      </StatusBadge>
-                    </div>
-                  </div>
-                  <div className="h-[60vh] overflow-y-auto space-y-6 pr-1">
-                    {productsWithImages.map((rec) => {
-                      const urls = (imagesById[rec.id] || []).filter(
-                        (u) => !badUrls.has(u)
-                      );
-                      const chosen = (selectedImagesById[rec.id] || []).filter(
-                        (u) => !badUrls.has(u)
-                      );
-                      const base = (() => {
-                        const candidate = makeBaseName(rec, filenameBaseField);
-                        if (
-                          filenameBaseField === "barcode" &&
-                          !String(rec?.barcode ?? "").trim()
-                        ) {
-                          return (
-                            makeBaseName(rec, pickFallbackBase()) ||
-                            String(rec.id)
+              {/* Header with Select All Products */}
+              <div className="mb-4 px-4">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center space-x-2">
+                    <input
+                      type="checkbox"
+                      id="modal-select-all-products"
+                      checked={allChecked}
+                      ref={(el) => {
+                        if (el) el.indeterminate = someChecked && !allChecked;
+                      }}
+                      onChange={(e) => {
+                        const checked = e.target.checked;
+                        // Update product IDs state
+                        if (checked) {
+                          const ids = new Set(
+                            productsWithImages.map((p) => p.id)
                           );
+                          setModalSelectedProductIds(ids);
+                        } else {
+                          setModalSelectedProductIds(new Set());
                         }
-                        return candidate || String(rec.id);
-                      })();
-                      const productChecked = modalSelectedProductIds.has(
-                        rec.id
-                      );
-                      return (
-                        <div
-                          key={rec.id}
-                          className={`rounded-lg border p-4 transition-colors ${
-                            productChecked
-                              ? "bg-accent/30 border-accent"
-                              : "bg-background"
-                          }`}
-                        >
-                          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-4">
-                            <div>
-                              <h4 className="font-medium">
-                                {rec.description ||
-                                  rec.itemCode ||
-                                  `Product ${rec.id}`}
-                              </h4>
-                              <p className="text-sm text-muted-foreground">
-                                Images: {urls.length} | Selected:{" "}
-                                {chosen.length}
-                              </p>
-                            </div>
-                            <div className="flex items-center space-x-2">
-                              <input
-                                type="checkbox"
-                                id={`product-${rec.id}`}
-                                checked={productChecked}
-                                onChange={(e) => {
-                                  if (e.target.checked) {
-                                    setModalSelectedProductIds((prev) =>
-                                      new Set(prev).add(rec.id)
-                                    );
-                                  } else {
-                                    setModalSelectedProductIds((prev) => {
-                                      const next = new Set(prev);
-                                      next.delete(rec.id);
-                                      return next;
-                                    });
-                                  }
-                                }}
-                                className="rounded"
-                              />
-                              <Label
-                                htmlFor={`product-${rec.id}`}
-                                className="text-sm mt-2"
-                              >
-                                Include Product
-                              </Label>
-                            </div>
-                          </div>
-                          {urls.length > 0 && (
-                            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
-                              {urls.map((u, tileIdx) => {
-                                const checked = chosen.includes(u);
-                                let labelWhenSelected = "";
-                                if (checked) {
-                                  const orderIndex = chosen.indexOf(u);
-                                  if (orderIndex === 0) {
-                                    labelWhenSelected = base;
-                                  } else {
-                                    labelWhenSelected = `${base}${filenameSeparator}${orderIndex}`;
-                                  }
-                                }
-                                const checkboxId = `cb-${rec.id}-${tileIdx}`;
-                                return (
-                                  <div
-                                    key={`${rec.id}-${tileIdx}`}
-                                    className={`border rounded-lg p-2 flex flex-col gap-2 cursor-pointer transition ${
-                                      checked
-                                        ? "ring-2 ring-primary"
-                                        : "hover:ring-1 hover:ring-muted"
-                                    } ${
-                                      !productChecked
-                                        ? "opacity-50 cursor-not-allowed"
-                                        : ""
-                                    }`}
-                                    title={u}
-                                  >
-                                    <label
-                                      htmlFor={
-                                        productChecked ? checkboxId : undefined
-                                      }
-                                      className="aspect-square w-full bg-white rounded overflow-hidden"
-                                      onClick={(e) => {
-                                        if (!productChecked) e.preventDefault();
-                                      }}
-                                    >
-                                      <Image
-                                        width={200}
-                                        height={200}
-                                        loading="lazy"
-                                        src={u}
-                                        alt="product"
-                                        className="w-full h-full object-contain"
-                                        onError={() => {
-                                          markBroken(u);
-                                          dispatch(
-                                            productsSlice.actions.toggleSelectImage(
-                                              {
-                                                id: rec.id,
-                                                url: u,
-                                                checked: false,
-                                              }
-                                            )
-                                          );
-                                        }}
-                                      />
-                                    </label>
-                                    <div className="flex items-center justify-between text-xs">
-                                      <input
-                                        id={checkboxId}
-                                        type="checkbox"
-                                        className="rounded"
-                                        checked={checked}
-                                        onChange={(e) =>
-                                          dispatch(
-                                            productsSlice.actions.toggleSelectImage(
-                                              {
-                                                id: rec.id,
-                                                url: u,
-                                                checked: e.target.checked,
-                                              }
-                                            )
-                                          )
-                                        }
-                                        disabled={!productChecked}
-                                      />
-                                      {checked && (
-                                        <span className="truncate font-medium text-xs">
-                                          {labelWhenSelected}
-                                        </span>
-                                      )}
-                                    </div>
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          )}
-                          {urls.length === 0 && (
-                            <div className="text-sm text-muted-foreground py-4 text-center">
-                              No valid images available for this product.
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
-                    {productsWithImages.length === 0 && (
-                      <div className="text-center py-8 text-muted-foreground">
-                        <ImageIcon className="h-12 w-12 mx-auto mb-2 opacity-50" />
-                        <p>No products with images to display.</p>
-                      </div>
-                    )}
+                        // ✅ Also toggle images for every product accordingly
+                        productsWithImages.forEach((rec) =>
+                          toggleAllImagesForProduct(rec, checked)
+                        );
+                      }}
+                      className="rounded"
+                    />
+                    <Label
+                      htmlFor="modal-select-all-products"
+                      className="text-sm mt-1.5 font-medium"
+                    >
+                      Select All Products
+                    </Label>
                   </div>
-                  <DialogFooter className="flex flex-col sm:flex-row sm:justify-between gap-3 mt-4">
-                    <Button
-                      variant="outline"
-                      onClick={() => handlePickerOpenChange(false)}
-                      disabled={zipLoading}
-                    >
-                      Go Back
-                    </Button>
-                    <ActionButton
-                      icon={DownloadIcon}
-                      onClick={downloadSelectedImages}
-                      disabled={zipLoading || selectedImagesCount === 0}
-                      variant="default"
-                    >
-                      {zipLoading ? (
-                        <>
-                          <Loader2 className="h-4 w-4 animate-spin" />
-                          Downloading...
-                        </>
+                  <span className="text-sm text-muted-foreground">
+                    Total Products: {productsWithImages.length}
+                  </span>
+                </div>
+              </div>
+              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 mb-6 p-4 bg-muted/50 rounded-lg">
+                <div className="space-y-2">
+                  <Label className="text-xs">Base Name</Label>
+                  <Select
+                    value={filenameBaseField}
+                    onValueChange={(value) =>
+                      dispatch(
+                        productsSlice.actions.setFilenameBaseField(value)
+                      )
+                    }
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {availableColumns.length ? (
+                        availableColumns
+                          .filter(
+                            (opt) =>
+                              typeof opt === "string" && opt.trim() !== ""
+                          )
+                          .map((opt) => (
+                            <SelectItem key={opt} value={opt}>
+                              {prettyCaption(opt)}
+                            </SelectItem>
+                          ))
                       ) : (
-                        `Download (${selectedImagesCount} images)`
+                        <SelectItem disabled>No columns</SelectItem>
                       )}
-                    </ActionButton>
-                  </DialogFooter>
-                  {zipLoading && (
-                    <div className="absolute inset-0 bg-background/80 flex items-center justify-center rounded-lg">
-                      <div className="bg-background p-6 rounded-lg shadow-lg border flex flex-col items-center gap-3">
-                        <Loader2 className="h-8 w-8 animate-spin" />
-                        <p className="text-sm">Preparing your download...</p>
-                        <p className="text-xs text-muted-foreground">
-                          Please keep this window open.
-                        </p>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label className="text-xs">Separator</Label>
+                  <Input
+                    value={filenameSeparator}
+                    onChange={(e) =>
+                      dispatch(
+                        productsSlice.actions.setFilenameSeparator(
+                          e.target.value
+                        )
+                      )
+                    }
+                    className="w-full"
+                    maxLength={3}
+                    placeholder="_"
+                  />
+                </div>
+                <div className="flex items-end">
+                  <StatusBadge variant="secondary">
+                    Selected: {selectedImagesCount} images
+                  </StatusBadge>
+                </div>
+              </div>
+              <div className="h-[60vh] overflow-y-auto space-y-6 pr-1">
+                {productsWithImages.map((rec) => {
+                  const urls = (imagesById[rec.id] || []).filter(
+                    (u) => !badUrls.has(u)
+                  );
+                  const chosen = (selectedImagesById[rec.id] || []).filter(
+                    (u) => !badUrls.has(u)
+                  );
+                  const base = (() => {
+                    const candidate = makeBaseName(rec, filenameBaseField);
+                    if (
+                      filenameBaseField === "barcode" &&
+                      !String(rec?.barcode ?? "").trim()
+                    ) {
+                      return (
+                        makeBaseName(rec, pickFallbackBase()) || String(rec.id)
+                      );
+                    }
+                    return candidate || String(rec.id);
+                  })();
+                  const productChecked = modalSelectedProductIds.has(rec.id);
+                  const productAllSelected =
+                    urls.length > 0 && chosen.length === urls.length;
+                  const productSomeSelected =
+                    !productAllSelected && chosen.length > 0;
+                  return (
+                    <div
+                      key={rec.id}
+                      className={`rounded-lg border p-4 transition-colors ${
+                        productChecked
+                          ? "bg-accent/30 border-accent"
+                          : "bg-background"
+                      }`}
+                    >
+                      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-4">
+                        <div>
+                          <h4 className="font-medium">
+                            {rec.description ||
+                              rec.itemCode ||
+                              `Product ${rec.id}`}
+                          </h4>
+                          <p className="text-sm text-muted-foreground">
+                            Images: {urls.length} | Selected: {chosen.length}
+                          </p>
+                        </div>
+                        {/* ✅ Product-level checkbox now also selects/unselects ALL images inside */}
+                        <div className="flex items-center space-x-2">
+                          <input
+                            type="checkbox"
+                            id={`product-${rec.id}`}
+                            checked={productChecked}
+                            ref={(el) => {
+                              if (el)
+                                el.indeterminate =
+                                  !productChecked && productSomeSelected;
+                            }}
+                            onChange={(e) => {
+                              const checked = e.target.checked;
+                              setModalSelectedProductIds((prev) => {
+                                const next = new Set(prev);
+                                if (checked) next.add(rec.id);
+                                else next.delete(rec.id);
+                                return next;
+                              });
+                              // ✅ Toggle all images for this product
+                              toggleAllImagesForProduct(rec, checked);
+                            }}
+                            className="rounded"
+                          />
+                          <Label
+                            htmlFor={`product-${rec.id}`}
+                            className="text-sm mt-2"
+                          >
+                            Include Product
+                          </Label>
+                        </div>
                       </div>
+                      {urls.length > 0 && (
+                        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
+                          {urls.map((u, tileIdx) => {
+                            const checked = chosen.includes(u);
+                            let labelWhenSelected = "";
+                            if (checked) {
+                              const orderIndex = chosen.indexOf(u);
+                              if (orderIndex === 0) {
+                                labelWhenSelected = base;
+                              } else {
+                                labelWhenSelected = `${base}${filenameSeparator}${orderIndex}`;
+                              }
+                            }
+                            const checkboxId = `cb-${rec.id}-${tileIdx}`;
+                            return (
+                              <div
+                                key={`${rec.id}-${tileIdx}`}
+                                className={`border rounded-lg p-2 flex flex-col gap-2 cursor-pointer transition ${
+                                  checked
+                                    ? "ring-2 ring-primary"
+                                    : "hover:ring-1 hover:ring-muted"
+                                } ${
+                                  !productChecked
+                                    ? "opacity-50 cursor-not-allowed"
+                                    : ""
+                                }`}
+                                title={u}
+                              >
+                                <label
+                                  htmlFor={checkboxId}
+                                  className="aspect-square w-full bg-white rounded overflow-hidden"
+                                  onClick={(e) => {
+                                    // ✅ If product wasn't included, auto-include it before toggling image
+                                    if (!productChecked) {
+                                      e.preventDefault();
+                                      setModalSelectedProductIds((prev) => {
+                                        const next = new Set(prev);
+                                        next.add(rec.id);
+                                        return next;
+                                      });
+                                      // Also make sure the image will toggle to checked on next tick
+                                      setTimeout(() => {
+                                        dispatch(
+                                          productsSlice.actions.toggleSelectImage(
+                                            {
+                                              id: rec.id,
+                                              url: u,
+                                              checked: true,
+                                            }
+                                          )
+                                        );
+                                      }, 0);
+                                    }
+                                  }}
+                                >
+                                  <Image
+                                    width={200}
+                                    height={200}
+                                    loading="lazy"
+                                    src={u}
+                                    alt="product"
+                                    className="w-full h-full object-contain"
+                                    onError={() => {
+                                      markBroken(u);
+                                      dispatch(
+                                        productsSlice.actions.toggleSelectImage(
+                                          {
+                                            id: rec.id,
+                                            url: u,
+                                            checked: false,
+                                          }
+                                        )
+                                      );
+                                    }}
+                                  />
+                                </label>
+                                <div className="flex items-center justify-between text-xs">
+                                  <input
+                                    id={checkboxId}
+                                    type="checkbox"
+                                    className="rounded"
+                                    checked={checked}
+                                    onChange={(e) => {
+                                      const willCheck = e.target.checked;
+                                      // ✅ Auto-include the product if user selects an image while product is off
+                                      if (willCheck && !productChecked) {
+                                        setModalSelectedProductIds((prev) => {
+                                          const next = new Set(prev);
+                                          next.add(rec.id);
+                                          return next;
+                                        });
+                                      }
+                                      dispatch(
+                                        productsSlice.actions.toggleSelectImage(
+                                          {
+                                            id: rec.id,
+                                            url: u,
+                                            checked: willCheck,
+                                          }
+                                        )
+                                      );
+                                    }}
+                                    disabled={!productChecked}
+                                  />
+                                  {checked && (
+                                    <span className="truncate font-medium text-xs">
+                                      {labelWhenSelected}
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                      {urls.length === 0 && (
+                        <div className="text-sm text-muted-foreground py-4 text-center">
+                          No valid images available for this product.
+                        </div>
+                      )}
                     </div>
+                  );
+                })}
+                {productsWithImages.length === 0 && (
+                  <div className="text-center py-8 text-muted-foreground">
+                    <ImageIcon className="h-12 w-12 mx-auto mb-2 opacity-50" />
+                    <p>No products with images to display.</p>
+                  </div>
+                )}
+              </div>
+              <DialogFooter className="flex flex-col sm:flex-row sm:justify-between gap-3 mt-4">
+                <Button
+                  variant="outline"
+                  onClick={() => handlePickerOpenChange(false)}
+                  disabled={zipLoading}
+                >
+                  Go Back
+                </Button>
+                <ActionButton
+                  icon={DownloadIcon}
+                  onClick={downloadSelectedImages}
+                  disabled={zipLoading || downloadSelections.length === 0}
+                  variant="default"
+                >
+                  {zipLoading ? (
+                    <>
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      Downloading...
+                    </>
+                  ) : (
+                    `Download (${downloadSelections.length} images)`
                   )}
-                </>
+                </ActionButton>
+              </DialogFooter>
+              {zipLoading && (
+                <div className="absolute inset-0 bg-background/80 flex items-center justify-center rounded-lg">
+                  <div className="bg-background p-6 rounded-lg shadow-lg border flex flex-col items-center gap-3">
+                    <Loader2 className="h-8 w-8 animate-spin" />
+                    <p className="text-sm">Preparing your download...</p>
+                    <p className="text-xs text-muted-foreground">
+                      Please keep this window open.
+                    </p>
+                  </div>
+                </div>
               )}
             </DialogContent>
           </Dialog>
-
           <Dialog open={previewOpen} onOpenChange={closePreview}>
             <DialogContent className="!max-w-6xl max-h-[100vh] max-sm:max-h-screen overflow-y-auto">
               <DialogHeader>
