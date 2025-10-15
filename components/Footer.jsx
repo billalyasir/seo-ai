@@ -111,9 +111,6 @@ const Footer = () => {
           <p>
             © {YEAR} {COMPANY.legalName}. All rights reserved.
           </p>
-          <p className="text-neutral-500">
-            Responsive • Accessible • Production-ready
-          </p>
         </div>
       </div>
     </footer>
