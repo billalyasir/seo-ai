@@ -289,7 +289,7 @@ export default function HomePage() {
       <section className="relative min-h-[70vh] flex items-center contents-center justify-center overflow-hidden">
         <div>
           <Fade>
-            <div className="inline-flex items-center gap-2 rounded-full border bg-background/60 backdrop-blur py-1 text-xs text-muted-foreground shadow-sm">
+            <div className="inline-flex p-2 items-center gap-2 rounded-full border bg-background/60 backdrop-blur py-1 text-xs text-muted-foreground shadow-sm">
               <Sparkles className="h-3.5 w-3.5" />
               <span>
                 Convert your product catalog into SEO content & images — with
